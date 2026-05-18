@@ -1,4 +1,4 @@
-function sdr_gui_app
+    function sdr_gui_app
 %SDR_GUI_APP GUI wrapper for the existing Pluto SDR TDD message/ACK flow.
 %
 % Run with:
@@ -305,11 +305,9 @@ logLine('GUI ready. Select a Pluto, connect, then start a half-duplex session.')
 
         packetId = newPacketId();
         app.pendingControlRequestId = packetId;
-        ackReceived = sendControlPayload('REQ', packetId, '', '');
-        if ackReceived
-            app.pendingControlRequestId = '';
-            logLine('Transmit control request delivered.');
-        end
+        sendControlPayloadBestEffort('REQ', packetId, '', '');
+        app.pendingControlRequestId = '';
+        logLine('Transmit control request sent without ACK wait.');
         updateControlUi();
     end
 
@@ -364,7 +362,20 @@ logLine('GUI ready. Select a Pluto, connect, then start a half-duplex session.')
     end
 
     function ackReceived = sendControlPayload(action, packetId, txnId, ownerCall)
+        payload = buildControlPayload(action, packetId, txnId, ownerCall);
         remoteCall = normalizeCall(app.remoteCallField.Value);
+        sentText = sprintf('%s  CONTROL TO=%s  ID=%s  CTRL=%s', timestamp(), remoteCall, packetId, action);
+        ackReceived = sendPayloadWithAck(payload, packetId, sentText, ['control ' action]);
+    end
+
+    function sendControlPayloadBestEffort(action, packetId, txnId, ownerCall)
+        payload = buildControlPayload(action, packetId, txnId, ownerCall);
+        remoteCall = normalizeCall(app.remoteCallField.Value);
+        sentText = sprintf('%s  CONTROL TO=%s  ID=%s  CTRL=%s  NOACK', timestamp(), remoteCall, packetId, action);
+        sendPayloadBestEffort(payload, sentText, ['control ' action]);
+    end
+
+    function payload = buildControlPayload(action, packetId, txnId, ownerCall)
         app.controlSeq = app.controlSeq + 1;
         payload = sprintf('ID=%s;CTRL=%s;SEQ=%d', packetId, action, app.controlSeq);
         if ~isempty(txnId)
@@ -373,8 +384,6 @@ logLine('GUI ready. Select a Pluto, connect, then start a half-duplex session.')
         if ~isempty(ownerCall)
             payload = sprintf('%s;OWNER=%s', payload, ownerCall);
         end
-        sentText = sprintf('%s  CONTROL TO=%s  ID=%s  CTRL=%s', timestamp(), remoteCall, packetId, action);
-        ackReceived = sendPayloadWithAck(payload, packetId, sentText, ['control ' action]);
     end
 
     function ackReceived = sendPayloadWithAck(payload, packetId, sentText, label)
@@ -424,6 +433,7 @@ logLine('GUI ready. Select a Pluto, connect, then start a half-duplex session.')
                 release(rxAck);
 
                 if ackReceived
+                    appendArea(app.recvArea, sprintf('%s  ACK FROM=%s  ACK=%s', timestamp(), ackSrc, packetId));
                     logLine(sprintf('ACK received from %s for ID=%s after %.1f s.', ackSrc, packetId, toc(tStart)));
                 else
                     for dbgIdx = 1:numel(ackDebug)
@@ -446,6 +456,46 @@ logLine('GUI ready. Select a Pluto, connect, then start a half-duplex session.')
         else
             setStatus('ACK timeout', [0.55 0.12 0.12]);
             logLine(sprintf('TX timed out after %.0f seconds.', app.timeoutSec));
+        end
+
+        if wasReceiving && app.sessionActive && ~app.stopTx
+            resumeSessionRx();
+        end
+        app.txBusy = false;
+        updateControlUi();
+    end
+
+    function sendPayloadBestEffort(payload, sentText, label)
+        if app.txBusy
+            logLine('Transmit already in progress.');
+            return;
+        end
+
+        app.txBusy = true;
+        updateControlUi();
+        radioId = selectedRadioId();
+        myCall = normalizeCall(app.localCallField.Value);
+        remoteCall = normalizeCall(app.remoteCallField.Value);
+        wasReceiving = app.receiving;
+        try
+            txFinal = buildMessageIQ(myCall, remoteCall, payload);
+        catch e
+            logLine(['Frame build failed: ' e.message]);
+            app.txBusy = false;
+            updateControlUi();
+            return;
+        end
+
+        suspendSessionRx();
+        appendArea(app.sentArea, sentText);
+        try
+            tx = mkTx(radioId, app.fs_sdr, app.txGainField.Value, app.centerFrequency);
+            logLine(sprintf('TX %s once without ACK wait.', label));
+            transmitRepeat(tx, txFinal);
+            pause(app.pktSec + 0.05);
+            release(tx);
+        catch e
+            logLine(['Best-effort transmit failed: ' e.message]);
         end
 
         if wasReceiving && app.sessionActive && ~app.stopTx
@@ -660,13 +710,8 @@ logLine('GUI ready. Select a Pluto, connect, then start a half-duplex session.')
         ownerCall = app.pendingStateOwner;
         app.pendingStateOwner = '';
         packetId = newPacketId();
-        ackReceived = sendControlPayload('STATE', packetId, '', ownerCall);
-        if ackReceived
-            logLine(sprintf('Control state announced. Owner=%s.', ownerCall));
-        else
-            app.pendingStateOwner = ownerCall;
-            logLine('Control state announcement was not acknowledged; it will be retried on the next received frame.');
-        end
+        sendControlPayloadBestEffort('STATE', packetId, '', ownerCall);
+        logLine(sprintf('Control state announced without ACK wait. Owner=%s.', ownerCall));
     end
 
     function applyCommittedOwner(ownerCall)
