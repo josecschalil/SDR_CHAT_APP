@@ -69,11 +69,7 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
         uilabel(top, 'Text', 'Remote Call');
         uilabel(top, 'Text', 'TX Gain');
         uilabel(top, 'Text', 'RX Gain');
-        app.modeGroup = uibuttongroup(top, 'Title', 'Mode');
-        app.modeGroup.Layout.Row = [2 3];
-        app.modeGroup.Layout.Column = 8;
-        uiradiobutton(app.modeGroup, 'Text', 'Transmit', 'Position', [12 36 90 22], 'Value', true);
-        uiradiobutton(app.modeGroup, 'Text', 'Receive', 'Position', [112 36 90 22]);
+        uilabel(top, 'Text', 'Mode');
 
         app.localCallField = uieditfield(top, 'text', 'Value', 'N0CALL');
         app.localCallField.Layout.Row = 3;
@@ -87,16 +83,22 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
         app.rxGainField = uieditfield(top, 'numeric', 'Value', app.defaultRxGain, 'Limits', [0 73]);
         app.rxGainField.Layout.Row = 3;
         app.rxGainField.Layout.Column = 4;
+        app.modeSwitch = uiswitch(top, 'slider', ...
+            'Items', {'Transmit', 'Receive'}, ...
+            'Value', 'Transmit', ...
+            'ValueChangedFcn', @(~,~) modeChanged());
+        app.modeSwitch.Layout.Row = 3;
+        app.modeSwitch.Layout.Column = 5;
 
         middle = uigridlayout(root, [2 2]);
         middle.RowHeight = {72, '1x'};
         middle.ColumnWidth = {'1x', '1x'};
         middle.ColumnSpacing = 10;
 
-        msgPanel = uipanel(middle, 'Title', 'Message');
-        msgPanel.Layout.Row = 1;
-        msgPanel.Layout.Column = [1 2];
-        msgGrid = uigridlayout(msgPanel, [1 4]);
+        app.msgPanel = uipanel(middle, 'Title', 'Message');
+        app.msgPanel.Layout.Row = 1;
+        app.msgPanel.Layout.Column = [1 2];
+        msgGrid = uigridlayout(app.msgPanel, [1 4]);
         msgGrid.ColumnWidth = {'1x', 100, 100, 100};
         app.messageField = uieditfield(msgGrid, 'text', 'Value', 'HELLO hII SDR');
         app.startButton = uibutton(msgGrid, 'Text', 'Start', 'ButtonPushedFcn', @(~,~) startAction());
@@ -156,13 +158,25 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
         logLine('Disconnected.');
     end
 
+    function modeChanged()
+        if strcmp(app.modeSwitch.Value, 'Receive')
+            app.messageField.Visible = 'off';
+            app.messageField.Enable = 'off';
+            app.msgPanel.Title = 'Receive Mode';
+        else
+            app.messageField.Visible = 'on';
+            app.messageField.Enable = 'on';
+            app.msgPanel.Title = 'Message';
+        end
+    end
+
     function startAction()
         if ~app.connected
             logLine('Connect to a Pluto before starting.');
             return;
         end
 
-        if strcmp(app.modeGroup.SelectedObject.Text, 'Transmit')
+        if strcmp(app.modeSwitch.Value, 'Transmit')
             sendMessageWithAck();
         else
             startReceiveMode();
@@ -177,9 +191,9 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
     end
 
     function clearDisplays()
-        app.sentArea.Value = {};
-        app.recvArea.Value = {};
-        app.logArea.Value = {};
+        app.sentArea.Value = {''};
+        app.recvArea.Value = {''};
+        app.logArea.Value = {''};
     end
 
     function sendMessageWithAck()
