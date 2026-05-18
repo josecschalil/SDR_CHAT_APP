@@ -20,7 +20,6 @@ app.defaultTxGain = -1;
 app.defaultRxGain = 50;
 
 app.rx = [];
-app.rxTimer = [];
 app.connected = false;
 app.receiving = false;
 app.stopTx = false;
@@ -289,6 +288,7 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
 
         radioId = selectedRadioId();
         try
+            app.stopTx = false;
             app.rx = mkRx(radioId, app.fs_sdr, app.samplesPerFrame, app.rxGainField.Value, app.centerFrequency);
             app.rxState = initRxState(app.fs, app.b_lpf, app.chunkSec);
             app.receiving = true;
@@ -302,25 +302,16 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
             logLine('Will ACK every decoded message');
             logLine('==============================');
 
-            app.rxTimer = timer('ExecutionMode', 'fixedSpacing', ...
-                'Period', app.chunkSec, ...
-                'BusyMode', 'drop', ...
-                'TimerFcn', @(~,~) receiveOneChunk());
-            start(app.rxTimer);
+            receiveLoop();
         catch e
             app.receiving = false;
             setStatus('Receive start failed', [0.55 0.12 0.12]);
             logLine(['Receive start failed: ' e.message]);
+            stopReceiveMode();
         end
     end
 
     function stopReceiveMode()
-        if ~isempty(app.rxTimer) && isvalid(app.rxTimer)
-            stop(app.rxTimer);
-            delete(app.rxTimer);
-        end
-        app.rxTimer = [];
-
         if ~isempty(app.rx)
             try
                 release(app.rx);
@@ -335,12 +326,8 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
         app.receiving = false;
     end
 
-    function receiveOneChunk()
-        if ~app.receiving || isempty(app.rx)
-            return;
-        end
-
-        try
+    function receiveLoop()
+        while app.receiving && ~app.stopTx && ~isempty(app.rx)
             data = double(app.rx());
             [app.rxState, decoded, src, dest, msg, power, noisePower, active, decodeError] = processRxChunk(app.rxState, data, ...
                 app.b_lpf, app.fs, app.fs_sdr, app.dev, app.decim);
@@ -366,8 +353,12 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
             elseif ~isempty(decodeError)
                 logLine(['decode failed: ' decodeError]);
             end
-        catch e
-            logLine(['Receive loop error: ' e.message]);
+
+            drawnow limitrate;
+        end
+
+        if app.receiving
+            stopReceiveMode();
         end
     end
 

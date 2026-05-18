@@ -16,8 +16,8 @@ PKT_SEC        = 1.4;
 CHUNK_SEC      = 0.2;
 ACK_LISTEN_SEC = 2.8;
 TIMEOUT_SEC    = 60;
-TX_GAIN_DB     = -1;
-RX_GAIN_DB     = 50;
+TX_GAIN_DB     = 0;
+RX_GAIN_DB     = 60;
 
 SAMPLES_PER_FRAME = round(CHUNK_SEC * fs_sdr);
 if mod(SAMPLES_PER_FRAME, decim) ~= 0
