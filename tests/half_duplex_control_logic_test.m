@@ -9,6 +9,12 @@ assert(strcmp(owner, 'N0A'), 'Equal-length callsigns should use lexicographic ti
 action = half_duplex_control_logic('CONTROL_ACTION', 'ID=1A2B;CTRL=REQ');
 assert(strcmp(action, 'REQ'), 'CTRL=REQ should parse');
 
+action = half_duplex_control_logic('CONTROL_ACTION', 'ID=1A2C;CTRL=COMMIT;SEQ=3;TXN=1003;OWNER=N0ACK');
+assert(strcmp(action, 'COMMIT'), 'CTRL=COMMIT should parse with fields');
+
+owner = half_duplex_control_logic('CONTROL_FIELD', 'ID=1A2C;CTRL=COMMIT;SEQ=3;TXN=1003;OWNER=N0ACK', 'OWNER');
+assert(strcmp(owner, 'N0ACK'), 'OWNER field should parse');
+
 action = half_duplex_control_logic('CONTROL_ACTION', 'ID=1A2B;HELLO');
 assert(isempty(action), 'Normal messages should not parse as control frames');
 
@@ -20,13 +26,20 @@ assert(state.hasTxControl, 'REQ must not transfer control');
 state = baseState('N0ACK');
 state = half_duplex_control_logic('APPLY_CONTROL', state, 'OFFER', 'N0CALL', '1002', false, 'N0ACK');
 assert(strcmp(state.pendingIncomingOfferId, '1002'), 'OFFER should create pending incoming offer');
-assert(~state.hasTxControl, 'OFFER should leave listener without control until accept is sent');
+assert(strcmp(state.controlOwnerCall, 'N0ACK'), 'OFFER must not change committed owner');
+assert(~state.hasTxControl, 'OFFER should leave listener without control until commit is received');
 
 state = baseState('N0CALL');
 state.pendingControlOfferId = '1003';
 state = half_duplex_control_logic('APPLY_CONTROL', state, 'ACCEPT', 'N0ACK', '1004', false, 'N0CALL');
-assert(strcmp(state.controlOwnerCall, 'N0ACK'), 'ACCEPT should transfer control to accepting peer');
-assert(~state.hasTxControl, 'Sender should lose control after ACCEPT');
+assert(strcmp(state.pendingCommitTxnId, '1003'), 'ACCEPT should schedule a commit for the original offer');
+assert(strcmp(state.controlOwnerCall, 'N0CALL'), 'ACCEPT must not change committed owner before COMMIT');
+assert(state.hasTxControl, 'Sender should keep control until COMMIT is sent');
+
+state.commitOwner = 'N0ACK';
+state = half_duplex_control_logic('APPLY_CONTROL', state, 'COMMIT', 'N0CALL', '1008', false, 'N0CALL');
+assert(strcmp(state.controlOwnerCall, 'N0ACK'), 'COMMIT should transfer committed owner');
+assert(~state.hasTxControl, 'Original transmitter should lose control after COMMIT');
 
 state = baseState('N0CALL');
 state.pendingControlOfferId = '1005';
@@ -48,4 +61,7 @@ state.pendingControlOfferId = '';
 state.pendingIncomingOfferId = '';
 state.pendingIncomingOfferFrom = '';
 state.lastRequestFrom = '';
+state.pendingCommitTxnId = '';
+state.pendingCommitOwner = '';
+state.commitOwner = '';
 end

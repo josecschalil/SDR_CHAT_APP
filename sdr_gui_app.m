@@ -33,6 +33,11 @@ app.pendingControlOfferId = '';
 app.pendingControlRequestId = '';
 app.pendingIncomingOfferId = '';
 app.pendingIncomingOfferFrom = '';
+app.pendingCommitTxnId = '';
+app.pendingCommitOwner = '';
+app.pendingStateOwner = '';
+app.controlSeq = 0;
+app.lastControlSeq = 0;
 
 if mod(round(app.chunkSec * app.fs_sdr), app.decim) ~= 0
     error('SamplesPerFrame must be divisible by decim (%d).', app.decim);
@@ -243,6 +248,11 @@ logLine('GUI ready. Select a Pluto, connect, then start a half-duplex session.')
             app.pendingControlRequestId = '';
             app.pendingIncomingOfferId = '';
             app.pendingIncomingOfferFrom = '';
+            app.pendingCommitTxnId = '';
+            app.pendingCommitOwner = '';
+            app.pendingStateOwner = '';
+            app.controlSeq = 0;
+            app.lastControlSeq = 0;
             app.rx = mkRx(radioId, app.fs_sdr, app.samplesPerFrame, app.rxGainField.Value, app.centerFrequency);
             app.rxState = initRxState(app.fs, app.b_lpf, app.chunkSec);
             app.receiving = true;
@@ -295,7 +305,7 @@ logLine('GUI ready. Select a Pluto, connect, then start a half-duplex session.')
 
         packetId = newPacketId();
         app.pendingControlRequestId = packetId;
-        ackReceived = sendControlPayload('REQ', packetId);
+        ackReceived = sendControlPayload('REQ', packetId, '', '');
         if ackReceived
             app.pendingControlRequestId = '';
             logLine('Transmit control request delivered.');
@@ -310,7 +320,7 @@ logLine('GUI ready. Select a Pluto, connect, then start a half-duplex session.')
 
         packetId = newPacketId();
         app.pendingControlOfferId = packetId;
-        ackReceived = sendControlPayload('OFFER', packetId);
+        ackReceived = sendControlPayload('OFFER', packetId, packetId, '');
         if ackReceived
             logLine('Control release offer delivered; waiting for accept or reject.');
         else
@@ -325,14 +335,12 @@ logLine('GUI ready. Select a Pluto, connect, then start a half-duplex session.')
         end
 
         packetId = newPacketId();
-        ackReceived = sendControlPayload('ACCEPT', packetId);
+        offerId = app.pendingIncomingOfferId;
+        ackReceived = sendControlPayload('ACCEPT', packetId, offerId, '');
         if ackReceived
-            myCall = normalizeCall(app.localCallField.Value);
-            app.controlOwnerCall = myCall;
-            app.hasTxControl = true;
             app.pendingIncomingOfferId = '';
             app.pendingIncomingOfferFrom = '';
-            appendArea(app.recvArea, sprintf('%s  CONTROL ACCEPTED - you now have transmit control', timestamp()));
+            appendArea(app.recvArea, sprintf('%s  CONTROL ACCEPTED - waiting for commit', timestamp()));
             setSessionStatus();
         end
         updateControlUi();
@@ -344,7 +352,8 @@ logLine('GUI ready. Select a Pluto, connect, then start a half-duplex session.')
         end
 
         packetId = newPacketId();
-        ackReceived = sendControlPayload('REJECT', packetId);
+        offerId = app.pendingIncomingOfferId;
+        ackReceived = sendControlPayload('REJECT', packetId, offerId, '');
         if ackReceived
             app.pendingIncomingOfferId = '';
             app.pendingIncomingOfferFrom = '';
@@ -354,9 +363,16 @@ logLine('GUI ready. Select a Pluto, connect, then start a half-duplex session.')
         updateControlUi();
     end
 
-    function ackReceived = sendControlPayload(action, packetId)
+    function ackReceived = sendControlPayload(action, packetId, txnId, ownerCall)
         remoteCall = normalizeCall(app.remoteCallField.Value);
-        payload = sprintf('ID=%s;CTRL=%s', packetId, action);
+        app.controlSeq = app.controlSeq + 1;
+        payload = sprintf('ID=%s;CTRL=%s;SEQ=%d', packetId, action, app.controlSeq);
+        if ~isempty(txnId)
+            payload = sprintf('%s;TXN=%s', payload, txnId);
+        end
+        if ~isempty(ownerCall)
+            payload = sprintf('%s;OWNER=%s', payload, ownerCall);
+        end
         sentText = sprintf('%s  CONTROL TO=%s  ID=%s  CTRL=%s', timestamp(), remoteCall, packetId, action);
         ackReceived = sendPayloadWithAck(payload, packetId, sentText, ['control ' action]);
     end
@@ -500,10 +516,12 @@ logLine('GUI ready. Select a Pluto, connect, then start a half-duplex session.')
                         appendArea(app.recvArea, sprintf('%s  FROM=%s  TO=%s  %s', timestamp(), src, dest, msg));
                     end
                 else
-                    handleControlFrame(controlAction, src, packetId, isDuplicate);
+                    handleControlFrame(controlAction, src, packetId, msg, isDuplicate);
                 end
                 if app.sessionActive
                     sendAckForMessage(src, dest, msg);
+                    sendPendingCommit();
+                    sendPendingState();
                 elseif ~isDuplicate && isempty(controlAction)
                     appendArea(app.recvArea, sprintf('%s  FROM=%s  TO=%s  %s', timestamp(), src, dest, msg));
                 end
@@ -532,13 +550,24 @@ logLine('GUI ready. Select a Pluto, connect, then start a half-duplex session.')
         end
     end
 
-    function handleControlFrame(action, src, packetId, isDuplicate)
+    function handleControlFrame(action, src, packetId, msg, isDuplicate)
         if isDuplicate
             logLine(sprintf('Duplicate CTRL=%s ignored for state; ACK will be resent.', action));
             return;
         end
 
         myCall = normalizeCall(app.localCallField.Value);
+        txnId = extractControlField(msg, 'TXN');
+        seqText = extractControlField(msg, 'SEQ');
+        seqValue = str2double(seqText);
+        if ~isnan(seqValue) && seqValue <= app.lastControlSeq && ~strcmp(action, 'COMMIT')
+            logLine(sprintf('Stale CTRL=%s ignored. SEQ %.0f <= %.0f.', action, seqValue, app.lastControlSeq));
+            return;
+        end
+        if ~isnan(seqValue)
+            app.lastControlSeq = seqValue;
+        end
+
         switch action
             case 'REQ'
                 appendArea(app.recvArea, sprintf('%s  CONTROL REQUEST FROM=%s  requesting transmit control', timestamp(), src));
@@ -547,24 +576,21 @@ logLine('GUI ready. Select a Pluto, connect, then start a half-duplex session.')
             case 'OFFER'
                 app.pendingIncomingOfferId = packetId;
                 app.pendingIncomingOfferFrom = src;
-                app.controlOwnerCall = src;
-                app.hasTxControl = false;
                 appendArea(app.recvArea, sprintf('%s  CONTROL OFFER FROM=%s  accept or reject transmit control', timestamp(), src));
                 logLine(sprintf('%s offered transmit control. Accept or reject the offer.', src));
 
             case 'ACCEPT'
-                if ~isempty(app.pendingControlOfferId)
-                    app.pendingControlOfferId = '';
-                    app.controlOwnerCall = src;
-                    app.hasTxControl = false;
+                if ~isempty(app.pendingControlOfferId) && (isempty(txnId) || strcmp(txnId, app.pendingControlOfferId))
+                    app.pendingCommitTxnId = app.pendingControlOfferId;
+                    app.pendingCommitOwner = src;
                     appendArea(app.recvArea, sprintf('%s  CONTROL ACCEPTED BY=%s  transmit control transferred', timestamp(), src));
-                    logLine(sprintf('%s accepted transmit control.', src));
+                    logLine(sprintf('%s accepted transmit control. Sending commit after ACK.', src));
                 else
                     logLine(sprintf('CTRL=ACCEPT from %s had no pending local offer.', src));
                 end
 
             case 'REJECT'
-                if ~isempty(app.pendingControlOfferId)
+                if ~isempty(app.pendingControlOfferId) && (isempty(txnId) || strcmp(txnId, app.pendingControlOfferId))
                     app.pendingControlOfferId = '';
                     app.controlOwnerCall = myCall;
                     app.hasTxControl = true;
@@ -573,10 +599,80 @@ logLine('GUI ready. Select a Pluto, connect, then start a half-duplex session.')
                 else
                     logLine(sprintf('CTRL=REJECT from %s had no pending local offer.', src));
                 end
+
+            case 'COMMIT'
+                ownerCall = extractControlField(msg, 'OWNER');
+                if isempty(ownerCall)
+                    ownerCall = src;
+                end
+                applyCommittedOwner(ownerCall);
+                app.pendingIncomingOfferId = '';
+                app.pendingIncomingOfferFrom = '';
+                app.pendingControlOfferId = '';
+                if app.hasTxControl
+                    app.pendingStateOwner = ownerCall;
+                end
+                appendArea(app.recvArea, sprintf('%s  CONTROL COMMIT OWNER=%s', timestamp(), ownerCall));
+                logLine(sprintf('Committed transmit control owner: %s.', ownerCall));
+
+            case 'STATE'
+                ownerCall = extractControlField(msg, 'OWNER');
+                if ~isempty(ownerCall)
+                    applyCommittedOwner(ownerCall);
+                    appendArea(app.recvArea, sprintf('%s  CONTROL STATE OWNER=%s', timestamp(), ownerCall));
+                    logLine(sprintf('Control state synchronized. Owner: %s.', ownerCall));
+                end
         end
 
         setSessionStatus();
         updateControlUi();
+    end
+
+    function sendPendingCommit()
+        if isempty(app.pendingCommitTxnId)
+            return;
+        end
+
+        txnId = app.pendingCommitTxnId;
+        ownerCall = app.pendingCommitOwner;
+        app.pendingCommitTxnId = '';
+        app.pendingCommitOwner = '';
+        packetId = newPacketId();
+        ackReceived = sendControlPayload('COMMIT', packetId, txnId, ownerCall);
+        app.pendingControlOfferId = '';
+        applyCommittedOwner(ownerCall);
+        if ackReceived
+            appendArea(app.recvArea, sprintf('%s  CONTROL COMMITTED - %s has transmit control', timestamp(), ownerCall));
+            setSessionStatus();
+        else
+            app.pendingCommitTxnId = txnId;
+            app.pendingCommitOwner = ownerCall;
+            logLine('Commit was not acknowledged; local owner was updated and commit will be retried on the next received frame.');
+        end
+        updateControlUi();
+    end
+
+    function sendPendingState()
+        if isempty(app.pendingStateOwner)
+            return;
+        end
+
+        ownerCall = app.pendingStateOwner;
+        app.pendingStateOwner = '';
+        packetId = newPacketId();
+        ackReceived = sendControlPayload('STATE', packetId, '', ownerCall);
+        if ackReceived
+            logLine(sprintf('Control state announced. Owner=%s.', ownerCall));
+        else
+            app.pendingStateOwner = ownerCall;
+            logLine('Control state announcement was not acknowledged; it will be retried on the next received frame.');
+        end
+    end
+
+    function applyCommittedOwner(ownerCall)
+        myCall = normalizeCall(app.localCallField.Value);
+        app.controlOwnerCall = normalizeCall(ownerCall);
+        app.hasTxControl = strcmp(app.controlOwnerCall, myCall);
     end
 
     function sendAckForMessage(src, dest, msg)
@@ -646,6 +742,9 @@ logLine('GUI ready. Select a Pluto, connect, then start a half-duplex session.')
         app.pendingControlRequestId = '';
         app.pendingIncomingOfferId = '';
         app.pendingIncomingOfferFrom = '';
+        app.pendingCommitTxnId = '';
+        app.pendingCommitOwner = '';
+        app.pendingStateOwner = '';
     end
 
     function setSessionStatus()
@@ -1027,6 +1126,10 @@ end
 
 function action = extractControlAction(msg)
 action = half_duplex_control_logic('CONTROL_ACTION', msg);
+end
+
+function value = extractControlField(msg, name)
+value = half_duplex_control_logic('CONTROL_FIELD', msg, name);
 end
 
 function value = timestamp()

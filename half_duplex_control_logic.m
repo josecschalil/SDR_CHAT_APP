@@ -5,6 +5,8 @@ switch upper(char(op))
         out = initialOwner(varargin{1}, varargin{2});
     case 'CONTROL_ACTION'
         out = controlAction(varargin{1});
+    case 'CONTROL_FIELD'
+        out = controlField(varargin{1}, varargin{2});
     case 'APPLY_CONTROL'
         out = applyControl(varargin{:});
     otherwise
@@ -27,9 +29,23 @@ end
 
 function action = controlAction(msg)
 action = '';
-tok = regexp(char(msg), '^ID=[0-9A-Fa-f]+;CTRL=(REQ|OFFER|ACCEPT|REJECT)$', 'tokens', 'once');
+tok = regexp(char(msg), '^ID=[0-9A-Fa-f]+;CTRL=(REQ|OFFER|ACCEPT|REJECT|COMMIT|STATE)(;.*)?$', 'tokens', 'once');
 if ~isempty(tok)
     action = tok{1};
+end
+end
+
+function value = controlField(msg, name)
+value = '';
+parts = strsplit(char(msg), ';');
+prefix = [upper(char(name)) '='];
+for k = 1:numel(parts)
+    part = char(parts{k});
+    if startsWith(part, prefix)
+        value = extractAfter(part, strlength(prefix));
+        value = char(value);
+        return;
+    end
 end
 end
 
@@ -44,19 +60,25 @@ switch char(action)
     case 'OFFER'
         state.pendingIncomingOfferId = char(packet_id);
         state.pendingIncomingOfferFrom = char(src);
-        state.controlOwnerCall = char(src);
-        state.hasTxControl = false;
     case 'ACCEPT'
         if ~isempty(state.pendingControlOfferId)
-            state.pendingControlOfferId = '';
-            state.controlOwnerCall = char(src);
-            state.hasTxControl = false;
+            state.pendingCommitTxnId = state.pendingControlOfferId;
+            state.pendingCommitOwner = char(src);
         end
     case 'REJECT'
         if ~isempty(state.pendingControlOfferId)
             state.pendingControlOfferId = '';
             state.controlOwnerCall = char(local_call);
             state.hasTxControl = true;
+        end
+    case {'COMMIT', 'STATE'}
+        owner = state.commitOwner;
+        if ~isempty(owner)
+            state.controlOwnerCall = char(owner);
+            state.hasTxControl = strcmp(state.controlOwnerCall, char(local_call));
+            state.pendingControlOfferId = '';
+            state.pendingIncomingOfferId = '';
+            state.pendingIncomingOfferFrom = '';
         end
 end
 end
