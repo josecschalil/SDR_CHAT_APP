@@ -334,12 +334,19 @@ logLine('GUI ready. Select a Pluto, connect, then start a half-duplex session.')
 
         packetId = newPacketId();
         offerId = app.pendingIncomingOfferId;
+        offerFrom = app.pendingIncomingOfferFrom;
+        app.pendingIncomingOfferId = '';
+        app.pendingIncomingOfferFrom = '';
+        appendArea(app.recvArea, sprintf('%s  CONTROL ACCEPT SENT - waiting for commit', timestamp()));
+        updateControlUi();
         ackReceived = sendControlPayload('ACCEPT', packetId, offerId, '');
         if ackReceived
-            app.pendingIncomingOfferId = '';
-            app.pendingIncomingOfferFrom = '';
-            appendArea(app.recvArea, sprintf('%s  CONTROL ACCEPTED - waiting for commit', timestamp()));
+            appendArea(app.recvArea, sprintf('%s  CONTROL ACCEPT ACKED - waiting for commit', timestamp()));
             setSessionStatus();
+        else
+            app.pendingIncomingOfferId = offerId;
+            app.pendingIncomingOfferFrom = offerFrom;
+            appendArea(app.recvArea, sprintf('%s  CONTROL ACCEPT NOT ACKED - offer restored', timestamp()));
         end
         updateControlUi();
     end
@@ -351,12 +358,18 @@ logLine('GUI ready. Select a Pluto, connect, then start a half-duplex session.')
 
         packetId = newPacketId();
         offerId = app.pendingIncomingOfferId;
+        offerFrom = app.pendingIncomingOfferFrom;
+        app.pendingIncomingOfferId = '';
+        app.pendingIncomingOfferFrom = '';
+        updateControlUi();
         ackReceived = sendControlPayload('REJECT', packetId, offerId, '');
         if ackReceived
-            app.pendingIncomingOfferId = '';
-            app.pendingIncomingOfferFrom = '';
             appendArea(app.recvArea, sprintf('%s  CONTROL REJECTED - %s keeps transmit control', timestamp(), app.controlOwnerCall));
             setSessionStatus();
+        else
+            app.pendingIncomingOfferId = offerId;
+            app.pendingIncomingOfferFrom = offerFrom;
+            appendArea(app.recvArea, sprintf('%s  CONTROL REJECT NOT ACKED - offer restored', timestamp()));
         end
         updateControlUi();
     end
@@ -688,6 +701,7 @@ logLine('GUI ready. Select a Pluto, connect, then start a half-duplex session.')
         app.pendingCommitTxnId = '';
         app.pendingCommitOwner = '';
         packetId = newPacketId();
+        pause(0.4);
         ackReceived = sendControlPayload('COMMIT', packetId, txnId, ownerCall);
         app.pendingControlOfferId = '';
         applyCommittedOwner(ownerCall);
