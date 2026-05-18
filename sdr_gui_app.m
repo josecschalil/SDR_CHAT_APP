@@ -62,10 +62,8 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
         app.connectButton.Layout.Column = 4;
         app.disconnectButton = uibutton(top, 'Text', 'Disconnect', 'Enable', 'off', 'ButtonPushedFcn', @(~,~) disconnectRadio());
         app.disconnectButton.Layout.Column = 5;
-        app.autoGainButton = uibutton(top, 'Text', 'Link Gain', 'Enable', 'off', 'ButtonPushedFcn', @(~,~) linkAutoGain());
-        app.autoGainButton.Layout.Column = 6;
         app.statusLabel = uilabel(top, 'Text', 'Disconnected', 'FontWeight', 'bold');
-        app.statusLabel.Layout.Column = [7 8];
+        app.statusLabel.Layout.Column = [6 8];
 
         uilabel(top, 'Text', 'Local Call');
         uilabel(top, 'Text', 'Remote Call');
@@ -98,13 +96,12 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
         msgPanel = uipanel(middle, 'Title', 'Message');
         msgPanel.Layout.Row = 1;
         msgPanel.Layout.Column = [1 2];
-        msgGrid = uigridlayout(msgPanel, [1 5]);
-        msgGrid.ColumnWidth = {'1x', 100, 100, 100, 100};
+        msgGrid = uigridlayout(msgPanel, [1 4]);
+        msgGrid.ColumnWidth = {'1x', 100, 100, 100};
         app.messageField = uieditfield(msgGrid, 'text', 'Value', 'HELLO hII SDR');
         app.startButton = uibutton(msgGrid, 'Text', 'Start', 'ButtonPushedFcn', @(~,~) startAction());
         app.stopButton = uibutton(msgGrid, 'Text', 'Stop', 'Enable', 'off', 'ButtonPushedFcn', @(~,~) stopAction());
         app.clearButton = uibutton(msgGrid, 'Text', 'Clear', 'ButtonPushedFcn', @(~,~) clearDisplays());
-        app.calTxButton = uibutton(msgGrid, 'Text', 'Cal TX', 'Enable', 'off', 'ButtonPushedFcn', @(~,~) calibrationTransmit());
 
         sentPanel = uipanel(middle, 'Title', 'Sent Messages');
         sentPanel.Layout.Row = 2;
@@ -141,8 +138,6 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
             app.connected = true;
             app.connectButton.Enable = 'off';
             app.disconnectButton.Enable = 'on';
-            app.autoGainButton.Enable = 'on';
-            app.calTxButton.Enable = 'on';
             setStatus(['Connected: ' radioId], [0.08 0.38 0.16]);
             logLine(['Connected to ' radioId]);
         catch e
@@ -157,150 +152,8 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
         app.connected = false;
         app.connectButton.Enable = 'on';
         app.disconnectButton.Enable = 'off';
-        app.autoGainButton.Enable = 'off';
-        app.calTxButton.Enable = 'off';
         setStatus('Disconnected', [0.55 0.12 0.12]);
         logLine('Disconnected.');
-    end
-
-    function linkAutoGain()
-        if ~app.connected
-            logLine('Connect to a Pluto before running link gain.');
-            return;
-        end
-        if app.receiving
-            logLine('Stop receive mode before running link gain.');
-            return;
-        end
-
-        app.stopTx = false;
-        setStatus('Link gain running', [0.1 0.28 0.58]);
-        app.autoGainButton.Enable = 'off';
-        app.startButton.Enable = 'off';
-        app.calTxButton.Enable = 'off';
-        app.stopButton.Enable = 'on';
-        drawnow;
-
-        radioId = selectedRadioId();
-        remoteCall = normalizeCall(app.remoteCallField.Value);
-        candidateGains = [30 35 40 45 50 55 60];
-        bestGain = app.rxGainField.Value;
-        bestDecodeScore = -inf;
-        bestFallbackScore = inf;
-
-        logLine(sprintf('Link gain: start Cal TX on remote station %s.', remoteCall));
-
-        for g = candidateGains
-            if app.stopTx
-                break;
-            end
-            try
-                rx = mkRx(radioId, app.fs_sdr, app.samplesPerFrame, g, app.centerFrequency);
-                state = initRxState(app.fs, app.b_lpf, app.chunkSec);
-                powers = [];
-                peaks = [];
-                decodedCount = 0;
-                tGain = tic;
-
-                while toc(tGain) < 2.0
-                    data = double(rx());
-                    powers(end+1) = mean(abs(data(:)).^2); %#ok<AGROW>
-                    peaks(end+1) = max(abs(data(:))); %#ok<AGROW>
-                    [state, decoded, src, ~, msg] = processRxChunk(state, data, ...
-                        app.b_lpf, app.fs, app.fs_sdr, app.dev, app.decim);
-
-                    if decoded && strcmp(src, remoteCall) && contains(msg, 'CAL=')
-                        decodedCount = decodedCount + 1;
-                    end
-                    drawnow limitrate;
-                end
-                release(rx);
-
-                p = median(powers);
-                peak = median(peaks);
-
-                saturated = peak > 0.85 || p > 5e-2;
-                decodeScore = decodedCount - 5 * saturated;
-                fallbackScore = abs(log10(max(p, 1e-12)) - log10(2e-3)) + 10 * saturated;
-
-                logLine(sprintf('Link gain trial RX=%d dB, decodes=%d, power=%.3g, peak=%.3g.', g, decodedCount, p, peak));
-                if decodeScore > bestDecodeScore || ...
-                        (decodeScore == bestDecodeScore && fallbackScore < bestFallbackScore)
-                    bestDecodeScore = decodeScore;
-                    bestFallbackScore = fallbackScore;
-                    bestGain = g;
-                end
-            catch e
-                logLine(sprintf('Link gain trial RX=%d dB failed: %s', g, e.message));
-            end
-        end
-
-        app.rxGainField.Value = bestGain;
-        app.txGainField.Value = app.defaultTxGain;
-        app.autoGainButton.Enable = 'on';
-        app.startButton.Enable = 'on';
-        app.calTxButton.Enable = 'on';
-        app.stopButton.Enable = 'off';
-        setStatus('Link gain complete', [0.08 0.38 0.16]);
-        if bestDecodeScore > 0
-            logLine(sprintf('Link gain selected RX=%d dB using decoded calibration packets.', bestGain));
-        else
-            logLine(sprintf('Link gain selected RX=%d dB from signal level only; no calibration packet decoded.', bestGain));
-        end
-    end
-
-    function calibrationTransmit()
-        if ~app.connected
-            logLine('Connect to a Pluto before calibration TX.');
-            return;
-        end
-        if app.receiving
-            logLine('Stop receive mode before calibration TX.');
-            return;
-        end
-
-        app.stopTx = false;
-        app.startButton.Enable = 'off';
-        app.autoGainButton.Enable = 'off';
-        app.calTxButton.Enable = 'off';
-        app.stopButton.Enable = 'on';
-        setStatus('Calibration TX', [0.1 0.28 0.58]);
-
-        radioId = selectedRadioId();
-        myCall = normalizeCall(app.localCallField.Value);
-        remoteCall = normalizeCall(app.remoteCallField.Value);
-        calMsg = sprintf('CAL=%s', myCall);
-        calIq = buildMessageIQ(myCall, remoteCall, calMsg);
-        tStart = tic;
-
-        logLine(sprintf('Calibration TX started from %s to %s. Stop after remote Link Gain finishes.', myCall, remoteCall));
-        while toc(tStart) < 45 && ~app.stopTx
-            try
-                tx = mkTx(radioId, app.fs_sdr, app.txGainField.Value, app.centerFrequency);
-                transmitRepeat(tx, calIq);
-                pause(app.pktSec + 0.05);
-                release(tx);
-                logLine(sprintf('Calibration burst sent at TX gain %.1f dB.', app.txGainField.Value));
-            catch e
-                logLine(['Calibration TX failed: ' e.message]);
-                break;
-            end
-            drawnow limitrate;
-            pause(0.15);
-        end
-
-        if app.stopTx
-            logLine('Calibration TX stopped by user.');
-            setStatus('Stopped', [0.45 0.32 0.05]);
-        else
-            logLine('Calibration TX finished after 45 seconds.');
-            setStatus('Calibration TX finished', [0.08 0.38 0.16]);
-        end
-
-        app.startButton.Enable = 'on';
-        app.autoGainButton.Enable = 'on';
-        app.calTxButton.Enable = 'on';
-        app.stopButton.Enable = 'off';
     end
 
     function startAction()
@@ -416,7 +269,12 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
             app.startButton.Enable = 'off';
             app.stopButton.Enable = 'on';
             setStatus('Receiving', [0.08 0.38 0.16]);
-            logLine('Receive mode started.');
+            myCall = normalizeCall(app.localCallField.Value);
+            logLine('==============================');
+            logLine(sprintf('RECEIVER ACTIVE - %s', myCall));
+            logLine(sprintf('TDD ACK: %.1fs packets  Chunks: %.1fs', app.pktSec, app.chunkSec));
+            logLine('Will ACK every decoded message');
+            logLine('==============================');
 
             app.rxTimer = timer('ExecutionMode', 'fixedSpacing', ...
                 'Period', app.chunkSec, ...
@@ -458,22 +316,29 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
 
         try
             data = double(app.rx());
-            [app.rxState, decoded, src, dest, msg, power, noisePower, active] = processRxChunk(app.rxState, data, ...
+            [app.rxState, decoded, src, dest, msg, power, noisePower, active, decodeError] = processRxChunk(app.rxState, data, ...
                 app.b_lpf, app.fs, app.fs_sdr, app.dev, app.decim);
 
             if toc(app.rxState.lastPrint) > 1.0
                 if active
-                    logLine(sprintf('Power %.3g, noise %.3g, active.', power, noisePower));
+                    logLine(sprintf('Power: %.3g  noise: %.3g  (active)  Gain: %d dB', power, noisePower, round(app.rxGainField.Value)));
                 else
-                    logLine(sprintf('Power %.3g, noise %.3g, idle.', power, noisePower));
+                    logLine(sprintf('Power: %.3g  noise: %.3g  (idle)', power, noisePower));
                 end
                 app.rxState.lastPrint = tic;
             end
 
             if decoded
+                logLine('==============================');
+                logLine('  MESSAGE RECEIVED');
+                logLine(sprintf('  FROM : %s', src));
+                logLine(sprintf('  TO   : %s', dest));
+                logLine(sprintf('  MSG  : %s', msg));
+                logLine('==============================');
                 appendArea(app.recvArea, sprintf('%s  FROM=%s  TO=%s  %s', timestamp(), src, dest, msg));
-                logLine(sprintf('Decoded message from %s.', src));
                 sendAckForMessage(src, msg);
+            elseif ~isempty(decodeError)
+                logLine(['decode failed: ' decodeError]);
             end
         catch e
             logLine(['Receive loop error: ' e.message]);
@@ -483,7 +348,7 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
     function sendAckForMessage(src, msg)
         packetId = extractPacketId(msg);
         if isempty(packetId)
-            logLine('Message has no packet ID; ACK skipped.');
+            logLine('Message has no packet ID; ACK skipped to avoid false acknowledgement.');
             return;
         end
 
@@ -492,6 +357,7 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
         ackIq = buildAckIQ(myCall, src, packetId, app.fs, app.fs_sdr, app.dev, app.ackPktSec);
 
         try
+            logLine(sprintf('Sending ACK %s to %s...', packetId, src));
             release(app.rx);
             pause(0.05);
             tx = mkTx(radioId, app.fs_sdr, app.txGainField.Value, app.centerFrequency);
@@ -500,10 +366,10 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
             release(tx);
 
             appendArea(app.sentArea, sprintf('%s  ACK TO=%s  ACK=%s', timestamp(), src, packetId));
-            logLine(sprintf('ACK sent to %s for ID=%s.', src, packetId));
 
             app.rx = mkRx(radioId, app.fs_sdr, app.samplesPerFrame, app.rxGainField.Value, app.centerFrequency);
             app.rxState = initRxState(app.fs, app.b_lpf, app.chunkSec);
+            logLine('ACK sent - resuming receive');
         catch e
             logLine(['ACK transmit failed: ' e.message]);
         end
@@ -686,11 +552,12 @@ state.hang = 0;
 state.lastPrint = tic;
 end
 
-function [state, decoded, src, dest, msg, power, noisePower, active] = processRxChunk(state, data, b_lpf, fs, fs_sdr, dev, decim)
+function [state, decoded, src, dest, msg, power, noisePower, active, decodeError] = processRxChunk(state, data, b_lpf, fs, fs_sdr, dev, decim)
 decoded = false;
 src = '';
 dest = '';
 msg = '';
+decodeError = '';
 
 data = double(data(:));
 power = mean(abs(data).^2);
@@ -753,7 +620,8 @@ end
 try
     [src, dest, msg] = ax25_decode(bits);
     decoded = true;
-catch
+catch e
+    decodeError = e.message;
 end
 end
 
