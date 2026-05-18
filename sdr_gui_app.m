@@ -249,7 +249,7 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
 
             try
                 rx = mkRx(radioId, app.fs_sdr, app.samplesPerFrame, app.rxGainField.Value, app.centerFrequency);
-                [ackReceived, ackSrc, ackMsg] = listenForAckRolling(rx, app.b_lpf, app.fs, app.fs_sdr, app.dev, app.decim, ...
+                [ackReceived, ackSrc, ackMsg, ackDebug] = listenForAckRolling(rx, app.b_lpf, app.fs, app.fs_sdr, app.dev, app.decim, ...
                     myCall, remoteCall, packetId, listenSec, app.chunkSec);
                 release(rx);
             catch e
@@ -261,6 +261,9 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
                 appendArea(app.recvArea, sprintf('%s  ACK FROM=%s  %s', timestamp(), ackSrc, ackMsg));
                 logLine(sprintf('ACK received for ID=%s after %.1f s.', packetId, toc(tStart)));
             else
+                for dbgIdx = 1:numel(ackDebug)
+                    logLine(ackDebug{dbgIdx});
+                end
                 logLine(sprintf('No ACK yet for ID=%s. Elapsed %.1f s.', packetId, toc(tStart)));
                 pause(0.2 + 0.2*rand);
             end
@@ -349,7 +352,7 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
                 logLine(sprintf('  MSG  : %s', msg));
                 logLine('==============================');
                 appendArea(app.recvArea, sprintf('%s  FROM=%s  TO=%s  %s', timestamp(), src, dest, msg));
-                sendAckForMessage(src, msg);
+                sendAckForMessage(src, dest, msg);
             elseif ~isempty(decodeError)
                 logLine(['decode failed: ' decodeError]);
             end
@@ -362,7 +365,7 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
         end
     end
 
-    function sendAckForMessage(src, msg)
+    function sendAckForMessage(src, dest, msg)
         packetId = extractPacketId(msg);
         if isempty(packetId)
             logLine('Message has no packet ID; ACK skipped to avoid false acknowledgement.');
@@ -370,8 +373,13 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
         end
 
         radioId = selectedRadioId();
-        myCall = normalizeCall(app.localCallField.Value);
-        ackIq = buildAckIQ(myCall, src, packetId, app.fs, app.fs_sdr, app.dev, app.ackPktSec);
+        configuredCall = normalizeCall(app.localCallField.Value);
+        ackSourceCall = configuredCall;
+        if ~isempty(dest) && ~strcmp(dest, configuredCall)
+            ackSourceCall = normalizeCall(dest);
+            logLine(sprintf('ACK source adjusted from Local Call %s to packet destination %s.', configuredCall, ackSourceCall));
+        end
+        ackIq = buildAckIQ(ackSourceCall, src, packetId, app.fs, app.fs_sdr, app.dev, app.ackPktSec);
 
         try
             logLine(sprintf('Sending ACK %s to %s...', packetId, src));
@@ -642,10 +650,11 @@ catch e
 end
 end
 
-function [ack_received, ack_src, ack_msg] = listenForAckRolling(rx, b_lpf, fs, fs_sdr, dev, decim, my_call, ack_call, packet_id, listen_sec, chunk_sec)
+function [ack_received, ack_src, ack_msg, ack_debug] = listenForAckRolling(rx, b_lpf, fs, fs_sdr, dev, decim, my_call, ack_call, packet_id, listen_sec, chunk_sec)
 ack_received = false;
 ack_src = '';
 ack_msg = '';
+ack_debug = {};
 
 state = initRxState(fs, b_lpf, chunk_sec);
 t0 = tic;
@@ -653,11 +662,26 @@ t0 = tic;
 while toc(t0) < listen_sec
     data = double(rx());
     [state, decoded, src, dest, msg] = processRxChunk(state, data, b_lpf, fs, fs_sdr, dev, decim);
-    if decoded && strcmp(src, ack_call) && strcmp(dest, my_call) && contains(msg, ['ACK=' packet_id])
-        ack_received = true;
-        ack_src = src;
-        ack_msg = msg;
-        return;
+    if decoded && contains(msg, 'ACK=')
+        if strcmp(src, ack_call) && strcmp(dest, my_call) && contains(msg, ['ACK=' packet_id])
+            ack_received = true;
+            ack_src = src;
+            ack_msg = msg;
+            return;
+        end
+
+        reason = {};
+        if ~strcmp(src, ack_call)
+            reason{end+1} = sprintf('source %s expected %s', src, ack_call); %#ok<AGROW>
+        end
+        if ~strcmp(dest, my_call)
+            reason{end+1} = sprintf('dest %s expected %s', dest, my_call); %#ok<AGROW>
+        end
+        if ~contains(msg, ['ACK=' packet_id])
+            reason{end+1} = sprintf('payload %s expected ACK=%s', msg, packet_id); %#ok<AGROW>
+        end
+        ack_debug{end+1} = sprintf('Ignored ACK candidate: FROM=%s TO=%s MSG=%s (%s)', ...
+            src, dest, msg, strjoin(reason, '; ')); %#ok<AGROW>
     end
 end
 end
