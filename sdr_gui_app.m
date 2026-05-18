@@ -16,6 +16,8 @@ app.ackPktSec = 1.0;
 app.chunkSec = 0.2;
 app.ackListenSec = 2.8;
 app.timeoutSec = 60;
+app.defaultTxGain = -1;
+app.defaultRxGain = 50;
 
 app.rx = [];
 app.rxTimer = [];
@@ -81,10 +83,10 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
         app.remoteCallField = uieditfield(top, 'text', 'Value', 'N0ACK');
         app.remoteCallField.Layout.Row = 3;
         app.remoteCallField.Layout.Column = 2;
-        app.txGainField = uieditfield(top, 'numeric', 'Value', -3, 'Limits', [-89.75 0]);
+        app.txGainField = uieditfield(top, 'numeric', 'Value', app.defaultTxGain, 'Limits', [-89.75 0]);
         app.txGainField.Layout.Row = 3;
         app.txGainField.Layout.Column = 3;
-        app.rxGainField = uieditfield(top, 'numeric', 'Value', 50, 'Limits', [0 73]);
+        app.rxGainField = uieditfield(top, 'numeric', 'Value', app.defaultRxGain, 'Limits', [0 73]);
         app.rxGainField.Layout.Row = 3;
         app.rxGainField.Layout.Column = 4;
 
@@ -96,7 +98,7 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
         msgPanel = uipanel(middle, 'Title', 'Message');
         msgPanel.Layout.Row = 1;
         msgPanel.Layout.Column = [1 2];
-        msgGrid = uigridlayout(msgPanel, [1 4]);
+        msgGrid = uigridlayout(msgPanel, [1 5]);
         msgGrid.ColumnWidth = {'1x', 100, 100, 100, 100};
         app.messageField = uieditfield(msgGrid, 'text', 'Value', 'HELLO hII SDR');
         app.startButton = uibutton(msgGrid, 'Text', 'Start', 'ButtonPushedFcn', @(~,~) startAction());
@@ -234,7 +236,7 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
         end
 
         app.rxGainField.Value = bestGain;
-        app.txGainField.Value = -3;
+        app.txGainField.Value = app.defaultTxGain;
         app.autoGainButton.Enable = 'on';
         app.startButton.Enable = 'on';
         app.calTxButton.Enable = 'on';
@@ -346,12 +348,11 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
 
         ackReceived = false;
         tStart = tic;
-        txGainSchedule = buildTxGainSchedule(app.txGainField.Value);
         retryCount = 0;
 
         while toc(tStart) < app.timeoutSec && ~ackReceived && ~app.stopTx
             retryCount = retryCount + 1;
-            txGain = txGainSchedule(min(retryCount, numel(txGainSchedule)));
+            txGain = app.txGainField.Value;
             try
                 tx = mkTx(radioId, app.fs_sdr, txGain, app.centerFrequency);
                 logLine(sprintf('TX burst using gain %.1f dB.', txGain));
@@ -383,10 +384,6 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
                 logLine(sprintf('ACK received for ID=%s after %.1f s.', packetId, toc(tStart)));
             else
                 logLine(sprintf('No ACK yet for ID=%s. Elapsed %.1f s.', packetId, toc(tStart)));
-                if retryCount < numel(txGainSchedule)
-                    app.txGainField.Value = txGainSchedule(retryCount + 1);
-                    logLine(sprintf('Auto TX gain step: next retry %.1f dB.', app.txGainField.Value));
-                end
                 pause(0.2 + 0.2*rand);
             end
             drawnow limitrate;
@@ -607,23 +604,6 @@ end
 if length(call) > 6
     call = call(1:6);
 end
-end
-
-function schedule = buildTxGainSchedule(startGain)
-base = [startGain -10 -6 -3 0];
-base = min(max(base, -89.75), 0);
-schedule = [];
-for k = 1:numel(base)
-    if isempty(schedule) || all(abs(schedule - base(k)) > 1e-9)
-        schedule(end+1) = base(k); %#ok<AGROW>
-    end
-end
-schedule = sort(schedule, 'ascend');
-startIdx = find(abs(schedule - min(max(startGain, -89.75), 0)) < 1e-9, 1);
-if isempty(startIdx)
-    startIdx = 1;
-end
-schedule = schedule(startIdx:end);
 end
 
 function b_lpf = buildLowpass(fs_sdr)

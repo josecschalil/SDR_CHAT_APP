@@ -4,7 +4,7 @@ fs     = 48000;
 fs_sdr = 960000;
 decim  = fs_sdr / fs;
 dev    = 5000;
-msg    = 'HELLO hII SDR';
+msg    = 'HELLO hII JOSE';
 packet_id = upper(dec2hex(randi([0 65535]), 4));
 tx_msg = sprintf('ID=%s;%s', packet_id, msg);
 
@@ -16,7 +16,7 @@ PKT_SEC        = 1.4;
 CHUNK_SEC      = 0.2;
 ACK_LISTEN_SEC = 2.8;
 TIMEOUT_SEC    = 60;
-TX_GAIN_DB     = -3;
+TX_GAIN_DB     = -1;
 RX_GAIN_DB     = 50;
 
 SAMPLES_PER_FRAME = round(CHUNK_SEC * fs_sdr);
