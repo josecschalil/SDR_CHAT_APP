@@ -65,11 +65,21 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
         app.statusLabel = uilabel(top, 'Text', 'Disconnected', 'FontWeight', 'bold');
         app.statusLabel.Layout.Column = [6 8];
 
-        uilabel(top, 'Text', 'Local Call');
-        uilabel(top, 'Text', 'Remote Call');
-        uilabel(top, 'Text', 'TX Gain');
-        uilabel(top, 'Text', 'RX Gain');
-        uilabel(top, 'Text', 'Mode');
+        localLabel = uilabel(top, 'Text', 'Local Call');
+        localLabel.Layout.Row = 2;
+        localLabel.Layout.Column = 1;
+        remoteLabel = uilabel(top, 'Text', 'Remote Call');
+        remoteLabel.Layout.Row = 2;
+        remoteLabel.Layout.Column = 2;
+        txGainLabel = uilabel(top, 'Text', 'TX Gain');
+        txGainLabel.Layout.Row = 2;
+        txGainLabel.Layout.Column = 3;
+        rxGainLabel = uilabel(top, 'Text', 'RX Gain');
+        rxGainLabel.Layout.Row = 2;
+        rxGainLabel.Layout.Column = 4;
+        modeLabel = uilabel(top, 'Text', 'Mode');
+        modeLabel.Layout.Row = 2;
+        modeLabel.Layout.Column = 5;
 
         app.localCallField = uieditfield(top, 'text', 'Value', 'N0CALL');
         app.localCallField.Layout.Row = 3;
@@ -83,12 +93,12 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
         app.rxGainField = uieditfield(top, 'numeric', 'Value', app.defaultRxGain, 'Limits', [0 73]);
         app.rxGainField.Layout.Row = 3;
         app.rxGainField.Layout.Column = 4;
-        app.modeSwitch = uiswitch(top, 'slider', ...
-            'Items', {'Transmit', 'Receive'}, ...
-            'Value', 'Transmit', ...
+        app.modeToggle = uibutton(top, 'state', ...
+            'Text', 'Transmit', ...
+            'Value', false, ...
             'ValueChangedFcn', @(~,~) modeChanged());
-        app.modeSwitch.Layout.Row = 3;
-        app.modeSwitch.Layout.Column = 5;
+        app.modeToggle.Layout.Row = 3;
+        app.modeToggle.Layout.Column = 5;
 
         middle = uigridlayout(root, [2 2]);
         middle.RowHeight = {72, '1x'};
@@ -159,11 +169,13 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
     end
 
     function modeChanged()
-        if strcmp(app.modeSwitch.Value, 'Receive')
+        if app.modeToggle.Value
+            app.modeToggle.Text = 'Receive';
             app.messageField.Visible = 'off';
             app.messageField.Enable = 'off';
             app.msgPanel.Title = 'Receive Mode';
         else
+            app.modeToggle.Text = 'Transmit';
             app.messageField.Visible = 'on';
             app.messageField.Enable = 'on';
             app.msgPanel.Title = 'Message';
@@ -176,10 +188,10 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
             return;
         end
 
-        if strcmp(app.modeSwitch.Value, 'Transmit')
-            sendMessageWithAck();
-        else
+        if app.modeToggle.Value
             startReceiveMode();
+        else
+            sendMessageWithAck();
         end
     end
 
