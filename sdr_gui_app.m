@@ -24,6 +24,7 @@ app.connected = false;
 app.receiving = false;
 app.stopTx = false;
 app.rxState = [];
+app.receivedPacketIds = containers.Map('KeyType', 'char', 'ValueType', 'logical');
 
 if mod(round(app.chunkSec * app.fs_sdr), app.decim) ~= 0
     error('SamplesPerFrame must be divisible by decim (%d).', app.decim);
@@ -205,6 +206,7 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
         app.sentArea.Value = {''};
         app.recvArea.Value = {''};
         app.logArea.Value = {''};
+        app.receivedPacketIds = containers.Map('KeyType', 'char', 'ValueType', 'logical');
     end
 
     function sendMessageWithAck()
@@ -345,13 +347,23 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
             end
 
             if decoded
+                [packetId, isDuplicate] = rememberReceivedPacket(msg);
                 logLine('==============================');
-                logLine('  MESSAGE RECEIVED');
+                if isDuplicate
+                    logLine('  DUPLICATE MESSAGE RECEIVED');
+                else
+                    logLine('  MESSAGE RECEIVED');
+                end
                 logLine(sprintf('  FROM : %s', src));
                 logLine(sprintf('  TO   : %s', dest));
                 logLine(sprintf('  MSG  : %s', msg));
+                if isDuplicate
+                    logLine(sprintf('  ID   : %s already displayed; resending ACK only', packetId));
+                end
                 logLine('==============================');
-                appendArea(app.recvArea, sprintf('%s  FROM=%s  TO=%s  %s', timestamp(), src, dest, msg));
+                if ~isDuplicate
+                    appendArea(app.recvArea, sprintf('%s  FROM=%s  TO=%s  %s', timestamp(), src, dest, msg));
+                end
                 sendAckForMessage(src, dest, msg);
             elseif ~isempty(decodeError)
                 logLine(['decode failed: ' decodeError]);
@@ -362,6 +374,19 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
 
         if app.receiving
             stopReceiveMode();
+        end
+    end
+
+    function [packetId, isDuplicate] = rememberReceivedPacket(msg)
+        packetId = extractPacketId(msg);
+        isDuplicate = false;
+        if isempty(packetId)
+            return;
+        end
+
+        isDuplicate = isKey(app.receivedPacketIds, packetId);
+        if ~isDuplicate
+            app.receivedPacketIds(packetId) = true;
         end
     end
 
