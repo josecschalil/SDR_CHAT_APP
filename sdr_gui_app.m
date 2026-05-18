@@ -22,9 +22,17 @@ app.defaultRxGain = 50;
 app.rx = [];
 app.connected = false;
 app.receiving = false;
+app.sessionActive = false;
 app.stopTx = false;
+app.txBusy = false;
 app.rxState = [];
 app.receivedPacketIds = containers.Map('KeyType', 'char', 'ValueType', 'logical');
+app.hasTxControl = false;
+app.controlOwnerCall = '';
+app.pendingControlOfferId = '';
+app.pendingControlRequestId = '';
+app.pendingIncomingOfferId = '';
+app.pendingIncomingOfferFrom = '';
 
 if mod(round(app.chunkSec * app.fs_sdr), app.decim) ~= 0
     error('SamplesPerFrame must be divisible by decim (%d).', app.decim);
@@ -35,7 +43,8 @@ app.b_lpf = buildLowpass(app.fs_sdr);
 buildUi();
 refreshRadios();
 setStatus('Disconnected', [0.55 0.12 0.12]);
-logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
+updateControlUi();
+logLine('GUI ready. Select a Pluto, connect, then start a half-duplex session.');
 
     function buildUi()
         app.fig = uifigure('Name', 'Pluto SDR TDD Messenger', ...
@@ -77,9 +86,9 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
         rxGainLabel = uilabel(top, 'Text', 'RX Gain');
         rxGainLabel.Layout.Row = 2;
         rxGainLabel.Layout.Column = 4;
-        modeLabel = uilabel(top, 'Text', 'Mode');
-        modeLabel.Layout.Row = 2;
-        modeLabel.Layout.Column = 5;
+        controlLabel = uilabel(top, 'Text', 'Control');
+        controlLabel.Layout.Row = 2;
+        controlLabel.Layout.Column = 5;
 
         app.localCallField = uieditfield(top, 'text', 'Value', 'N0CALL');
         app.localCallField.Layout.Row = 3;
@@ -93,27 +102,48 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
         app.rxGainField = uieditfield(top, 'numeric', 'Value', app.defaultRxGain, 'Limits', [0 73]);
         app.rxGainField.Layout.Row = 3;
         app.rxGainField.Layout.Column = 4;
-        app.modeToggle = uibutton(top, 'state', ...
-            'Text', 'Transmit', ...
-            'Value', false, ...
-            'ValueChangedFcn', @(~,~) modeChanged());
-        app.modeToggle.Layout.Row = 3;
-        app.modeToggle.Layout.Column = 5;
+        app.controlLabel = uilabel(top, 'Text', 'No session', 'FontWeight', 'bold');
+        app.controlLabel.Layout.Row = 3;
+        app.controlLabel.Layout.Column = [5 8];
 
         middle = uigridlayout(root, [2 2]);
-        middle.RowHeight = {72, '1x'};
+        middle.RowHeight = {104, '1x'};
         middle.ColumnWidth = {'1x', '1x'};
         middle.ColumnSpacing = 10;
 
         app.msgPanel = uipanel(middle, 'Title', 'Message');
         app.msgPanel.Layout.Row = 1;
         app.msgPanel.Layout.Column = [1 2];
-        msgGrid = uigridlayout(app.msgPanel, [1 4]);
-        msgGrid.ColumnWidth = {'1x', 100, 100, 100};
+        msgGrid = uigridlayout(app.msgPanel, [2 8]);
+        msgGrid.RowHeight = {32, 32};
+        msgGrid.ColumnWidth = {'1x', 110, 110, 120, 120, 120, 90, 90};
         app.messageField = uieditfield(msgGrid, 'text', 'Value', 'HELLO hII SDR');
-        app.startButton = uibutton(msgGrid, 'Text', 'Start', 'ButtonPushedFcn', @(~,~) startAction());
+        app.messageField.Layout.Row = 1;
+        app.messageField.Layout.Column = [1 8];
+        app.startButton = uibutton(msgGrid, 'Text', 'Start Session', 'ButtonPushedFcn', @(~,~) startAction());
+        app.startButton.Layout.Row = 2;
+        app.startButton.Layout.Column = 1;
         app.stopButton = uibutton(msgGrid, 'Text', 'Stop', 'Enable', 'off', 'ButtonPushedFcn', @(~,~) stopAction());
+        app.stopButton.Layout.Row = 2;
+        app.stopButton.Layout.Column = 2;
+        app.sendButton = uibutton(msgGrid, 'Text', 'Send Message', 'Enable', 'off', 'ButtonPushedFcn', @(~,~) sendChatMessage());
+        app.sendButton.Layout.Row = 2;
+        app.sendButton.Layout.Column = 3;
+        app.releaseButton = uibutton(msgGrid, 'Text', 'Release Control', 'Enable', 'off', 'ButtonPushedFcn', @(~,~) releaseControl());
+        app.releaseButton.Layout.Row = 2;
+        app.releaseButton.Layout.Column = 4;
+        app.requestButton = uibutton(msgGrid, 'Text', 'Request Control', 'Enable', 'off', 'ButtonPushedFcn', @(~,~) requestControl());
+        app.requestButton.Layout.Row = 2;
+        app.requestButton.Layout.Column = 5;
+        app.acceptButton = uibutton(msgGrid, 'Text', 'Accept Control', 'Enable', 'off', 'ButtonPushedFcn', @(~,~) acceptControl());
+        app.acceptButton.Layout.Row = 2;
+        app.acceptButton.Layout.Column = 6;
+        app.rejectButton = uibutton(msgGrid, 'Text', 'Reject', 'Enable', 'off', 'ButtonPushedFcn', @(~,~) rejectControl());
+        app.rejectButton.Layout.Row = 2;
+        app.rejectButton.Layout.Column = 7;
         app.clearButton = uibutton(msgGrid, 'Text', 'Clear', 'ButtonPushedFcn', @(~,~) clearDisplays());
+        app.clearButton.Layout.Row = 2;
+        app.clearButton.Layout.Column = 8;
 
         sentPanel = uipanel(middle, 'Title', 'Sent Messages');
         sentPanel.Layout.Row = 2;
@@ -151,6 +181,7 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
             app.connectButton.Enable = 'off';
             app.disconnectButton.Enable = 'on';
             setStatus(['Connected: ' radioId], [0.08 0.38 0.16]);
+            updateControlUi();
             logLine(['Connected to ' radioId]);
         catch e
             app.connected = false;
@@ -165,21 +196,8 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
         app.connectButton.Enable = 'on';
         app.disconnectButton.Enable = 'off';
         setStatus('Disconnected', [0.55 0.12 0.12]);
+        updateControlUi();
         logLine('Disconnected.');
-    end
-
-    function modeChanged()
-        if app.modeToggle.Value
-            app.modeToggle.Text = 'Receive';
-            app.messageField.Visible = 'off';
-            app.messageField.Enable = 'off';
-            app.msgPanel.Title = 'Receive Mode';
-        else
-            app.modeToggle.Text = 'Transmit';
-            app.messageField.Visible = 'on';
-            app.messageField.Enable = 'on';
-            app.msgPanel.Title = 'Message';
-        end
     end
 
     function startAction()
@@ -188,18 +206,16 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
             return;
         end
 
-        if app.modeToggle.Value
-            startReceiveMode();
-        else
-            sendMessageWithAck();
-        end
+        startSession();
     end
 
     function stopAction()
         app.stopTx = true;
+        app.sessionActive = false;
+        app.txBusy = false;
         stopReceiveMode();
-        app.startButton.Enable = 'on';
-        app.stopButton.Enable = 'off';
+        resetControlState();
+        updateControlUi();
     end
 
     function clearDisplays()
@@ -209,71 +225,205 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
         app.receivedPacketIds = containers.Map('KeyType', 'char', 'ValueType', 'logical');
     end
 
-    function sendMessageWithAck()
-        app.stopTx = false;
-        app.startButton.Enable = 'off';
-        app.stopButton.Enable = 'on';
-        setStatus('Transmitting', [0.1 0.28 0.58]);
+    function startSession()
+        if app.receiving
+            return;
+        end
 
+        radioId = selectedRadioId();
+        try
+            app.stopTx = false;
+            app.sessionActive = true;
+            app.receivedPacketIds = containers.Map('KeyType', 'char', 'ValueType', 'logical');
+            myCall = normalizeCall(app.localCallField.Value);
+            remoteCall = normalizeCall(app.remoteCallField.Value);
+            app.controlOwnerCall = initialControlOwner(myCall, remoteCall);
+            app.hasTxControl = strcmp(app.controlOwnerCall, myCall);
+            app.pendingControlOfferId = '';
+            app.pendingControlRequestId = '';
+            app.pendingIncomingOfferId = '';
+            app.pendingIncomingOfferFrom = '';
+            app.rx = mkRx(radioId, app.fs_sdr, app.samplesPerFrame, app.rxGainField.Value, app.centerFrequency);
+            app.rxState = initRxState(app.fs, app.b_lpf, app.chunkSec);
+            app.receiving = true;
+            setSessionStatus();
+            updateControlUi();
+            logLine('==============================');
+            logLine(sprintf('HALF-DUPLEX SESSION ACTIVE - %s', myCall));
+            logLine(sprintf('Remote call: %s', remoteCall));
+            logLine(sprintf('Initial transmit control: %s', app.controlOwnerCall));
+            logLine(sprintf('TDD ACK: %.1fs packets  Chunks: %.1fs', app.pktSec, app.chunkSec));
+            logLine('Will ACK every decoded message and control frame');
+            logLine('==============================');
+
+            receiveLoop();
+        catch e
+            app.receiving = false;
+            app.sessionActive = false;
+            setStatus('Receive start failed', [0.55 0.12 0.12]);
+            updateControlUi();
+            logLine(['Receive start failed: ' e.message]);
+            stopReceiveMode();
+        end
+    end
+
+    function sendChatMessage()
+        if ~app.sessionActive
+            logLine('Start a session before sending.');
+            return;
+        end
+        if ~app.hasTxControl
+            logLine(sprintf('Cannot send message: transmit control belongs to %s.', app.controlOwnerCall));
+            return;
+        end
+
+        remoteCall = normalizeCall(app.remoteCallField.Value);
+        msg = char(app.messageField.Value);
+        packetId = newPacketId();
+        payload = sprintf('ID=%s;%s', packetId, msg);
+        sentText = sprintf('%s  TO=%s  ID=%s  %s', timestamp(), remoteCall, packetId, msg);
+        ackReceived = sendPayloadWithAck(payload, packetId, sentText, 'message');
+        if ackReceived
+            setSessionStatus();
+        end
+    end
+
+    function requestControl()
+        if ~app.sessionActive || app.hasTxControl
+            return;
+        end
+
+        packetId = newPacketId();
+        app.pendingControlRequestId = packetId;
+        ackReceived = sendControlPayload('REQ', packetId);
+        if ackReceived
+            app.pendingControlRequestId = '';
+            logLine('Transmit control request delivered.');
+        end
+        updateControlUi();
+    end
+
+    function releaseControl()
+        if ~app.sessionActive || ~app.hasTxControl
+            return;
+        end
+
+        packetId = newPacketId();
+        app.pendingControlOfferId = packetId;
+        ackReceived = sendControlPayload('OFFER', packetId);
+        if ackReceived
+            logLine('Control release offer delivered; waiting for accept or reject.');
+        else
+            app.pendingControlOfferId = '';
+        end
+        updateControlUi();
+    end
+
+    function acceptControl()
+        if ~app.sessionActive || isempty(app.pendingIncomingOfferId)
+            return;
+        end
+
+        packetId = newPacketId();
+        ackReceived = sendControlPayload('ACCEPT', packetId);
+        if ackReceived
+            myCall = normalizeCall(app.localCallField.Value);
+            app.controlOwnerCall = myCall;
+            app.hasTxControl = true;
+            app.pendingIncomingOfferId = '';
+            app.pendingIncomingOfferFrom = '';
+            appendArea(app.recvArea, sprintf('%s  CONTROL ACCEPTED - you now have transmit control', timestamp()));
+            setSessionStatus();
+        end
+        updateControlUi();
+    end
+
+    function rejectControl()
+        if ~app.sessionActive || isempty(app.pendingIncomingOfferId)
+            return;
+        end
+
+        packetId = newPacketId();
+        ackReceived = sendControlPayload('REJECT', packetId);
+        if ackReceived
+            app.pendingIncomingOfferId = '';
+            app.pendingIncomingOfferFrom = '';
+            appendArea(app.recvArea, sprintf('%s  CONTROL REJECTED - %s keeps transmit control', timestamp(), app.controlOwnerCall));
+            setSessionStatus();
+        end
+        updateControlUi();
+    end
+
+    function ackReceived = sendControlPayload(action, packetId)
+        remoteCall = normalizeCall(app.remoteCallField.Value);
+        payload = sprintf('ID=%s;CTRL=%s', packetId, action);
+        sentText = sprintf('%s  CONTROL TO=%s  ID=%s  CTRL=%s', timestamp(), remoteCall, packetId, action);
+        ackReceived = sendPayloadWithAck(payload, packetId, sentText, ['control ' action]);
+    end
+
+    function ackReceived = sendPayloadWithAck(payload, packetId, sentText, label)
+        ackReceived = false;
+        if app.txBusy
+            logLine('Transmit already in progress.');
+            return;
+        end
+
+        app.txBusy = true;
+        updateControlUi();
         radioId = selectedRadioId();
         myCall = normalizeCall(app.localCallField.Value);
         remoteCall = normalizeCall(app.remoteCallField.Value);
-        msg = char(app.messageField.Value);
-        packetId = upper(dec2hex(randi([0 65535]), 4));
-        txMsg = sprintf('ID=%s;%s', packetId, msg);
+        wasReceiving = app.receiving;
+        try
+            txFinal = buildMessageIQ(myCall, remoteCall, payload);
+        catch e
+            logLine(['Frame build failed: ' e.message]);
+            app.txBusy = false;
+            updateControlUi();
+            return;
+        end
 
-        txFinal = buildMessageIQ(myCall, remoteCall, txMsg);
-        appendArea(app.sentArea, sprintf('%s  TO=%s  ID=%s  %s', timestamp(), remoteCall, packetId, msg));
-        logLine(sprintf('TX started. ID=%s, ACK expected from %s.', packetId, remoteCall));
+        suspendSessionRx();
+        appendArea(app.sentArea, sentText);
+        logLine(sprintf('TX %s started. ID=%s, ACK expected from %s.', label, packetId, remoteCall));
 
-        ackReceived = false;
         tStart = tic;
-        retryCount = 0;
-
-        while toc(tStart) < app.timeoutSec && ~ackReceived && ~app.stopTx
-            retryCount = retryCount + 1;
-            txGain = app.txGainField.Value;
-            try
+        try
+            while toc(tStart) < app.timeoutSec && ~ackReceived && ~app.stopTx
+                txGain = app.txGainField.Value;
                 tx = mkTx(radioId, app.fs_sdr, txGain, app.centerFrequency);
                 logLine(sprintf('TX burst using gain %.1f dB.', txGain));
                 transmitRepeat(tx, txFinal);
                 pause(app.pktSec + 0.05);
                 release(tx);
-            catch e
-                logLine(['Transmit failed: ' e.message]);
-                break;
-            end
 
-            listenSec = min(app.ackListenSec, max(0, app.timeoutSec - toc(tStart)));
-            if listenSec < app.chunkSec
-                break;
-            end
-
-            try
-                rx = mkRx(radioId, app.fs_sdr, app.samplesPerFrame, app.rxGainField.Value, app.centerFrequency);
-                [ackReceived, ackSrc, ackMsg, ackDebug] = listenForAckRolling(rx, app.b_lpf, app.fs, app.fs_sdr, app.dev, app.decim, ...
-                    myCall, remoteCall, packetId, listenSec, app.chunkSec);
-                release(rx);
-            catch e
-                logLine(['ACK listen failed: ' e.message]);
-                break;
-            end
-
-            if ackReceived
-                appendArea(app.recvArea, sprintf('%s  ACK FROM=%s  %s', timestamp(), ackSrc, ackMsg));
-                logLine(sprintf('ACK received for ID=%s after %.1f s.', packetId, toc(tStart)));
-            else
-                for dbgIdx = 1:numel(ackDebug)
-                    logLine(ackDebug{dbgIdx});
+                listenSec = min(app.ackListenSec, max(0, app.timeoutSec - toc(tStart)));
+                if listenSec < app.chunkSec
+                    break;
                 end
-                logLine(sprintf('No ACK yet for ID=%s. Elapsed %.1f s.', packetId, toc(tStart)));
-                pause(0.2 + 0.2*rand);
+
+                rxAck = mkRx(radioId, app.fs_sdr, app.samplesPerFrame, app.rxGainField.Value, app.centerFrequency);
+                [ackReceived, ackSrc, ~, ackDebug] = listenForAckRolling(rxAck, app.b_lpf, app.fs, app.fs_sdr, app.dev, app.decim, ...
+                    myCall, remoteCall, packetId, listenSec, app.chunkSec);
+                release(rxAck);
+
+                if ackReceived
+                    logLine(sprintf('ACK received from %s for ID=%s after %.1f s.', ackSrc, packetId, toc(tStart)));
+                else
+                    for dbgIdx = 1:numel(ackDebug)
+                        logLine(ackDebug{dbgIdx});
+                    end
+                    logLine(sprintf('No ACK yet for ID=%s. Elapsed %.1f s.', packetId, toc(tStart)));
+                    pause(0.2 + 0.2*rand);
+                end
+                drawnow limitrate;
             end
-            drawnow limitrate;
+        catch e
+            logLine(['Transmit/ACK failed: ' e.message]);
         end
 
         if ackReceived
-            setStatus('Message acknowledged', [0.08 0.38 0.16]);
+            setStatus('Frame acknowledged', [0.08 0.38 0.16]);
         elseif app.stopTx
             setStatus('Stopped', [0.45 0.32 0.05]);
             logLine('TX stopped by user.');
@@ -282,38 +432,11 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
             logLine(sprintf('TX timed out after %.0f seconds.', app.timeoutSec));
         end
 
-        app.startButton.Enable = 'on';
-        app.stopButton.Enable = 'off';
-    end
-
-    function startReceiveMode()
-        if app.receiving
-            return;
+        if wasReceiving && app.sessionActive && ~app.stopTx
+            resumeSessionRx();
         end
-
-        radioId = selectedRadioId();
-        try
-            app.stopTx = false;
-            app.rx = mkRx(radioId, app.fs_sdr, app.samplesPerFrame, app.rxGainField.Value, app.centerFrequency);
-            app.rxState = initRxState(app.fs, app.b_lpf, app.chunkSec);
-            app.receiving = true;
-            app.startButton.Enable = 'off';
-            app.stopButton.Enable = 'on';
-            setStatus('Receiving', [0.08 0.38 0.16]);
-            myCall = normalizeCall(app.localCallField.Value);
-            logLine('==============================');
-            logLine(sprintf('RECEIVER ACTIVE - %s', myCall));
-            logLine(sprintf('TDD ACK: %.1fs packets  Chunks: %.1fs', app.pktSec, app.chunkSec));
-            logLine('Will ACK every decoded message');
-            logLine('==============================');
-
-            receiveLoop();
-        catch e
-            app.receiving = false;
-            setStatus('Receive start failed', [0.55 0.12 0.12]);
-            logLine(['Receive start failed: ' e.message]);
-            stopReceiveMode();
-        end
+        app.txBusy = false;
+        updateControlUi();
     end
 
     function stopReceiveMode()
@@ -348,11 +471,22 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
 
             if decoded
                 [packetId, isDuplicate] = rememberReceivedPacket(msg);
+                controlAction = extractControlAction(msg);
+                if startsWith(char(msg), 'ACK=')
+                    logLine(sprintf('ACK frame heard outside active wait: FROM=%s TO=%s MSG=%s', src, dest, msg));
+                    drawnow limitrate;
+                    continue;
+                end
+
                 logLine('==============================');
                 if isDuplicate
-                    logLine('  DUPLICATE MESSAGE RECEIVED');
+                    logLine('  DUPLICATE FRAME RECEIVED');
                 else
-                    logLine('  MESSAGE RECEIVED');
+                    if isempty(controlAction)
+                        logLine('  MESSAGE RECEIVED');
+                    else
+                        logLine('  CONTROL FRAME RECEIVED');
+                    end
                 end
                 logLine(sprintf('  FROM : %s', src));
                 logLine(sprintf('  TO   : %s', dest));
@@ -361,10 +495,18 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
                     logLine(sprintf('  ID   : %s already displayed; resending ACK only', packetId));
                 end
                 logLine('==============================');
-                if ~isDuplicate
+                if isempty(controlAction)
+                    if ~isDuplicate
+                        appendArea(app.recvArea, sprintf('%s  FROM=%s  TO=%s  %s', timestamp(), src, dest, msg));
+                    end
+                else
+                    handleControlFrame(controlAction, src, packetId, isDuplicate);
+                end
+                if app.sessionActive
+                    sendAckForMessage(src, dest, msg);
+                elseif ~isDuplicate && isempty(controlAction)
                     appendArea(app.recvArea, sprintf('%s  FROM=%s  TO=%s  %s', timestamp(), src, dest, msg));
                 end
-                sendAckForMessage(src, dest, msg);
             elseif ~isempty(decodeError)
                 logLine(['decode failed: ' decodeError]);
             end
@@ -388,6 +530,53 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
         if ~isDuplicate
             app.receivedPacketIds(packetId) = true;
         end
+    end
+
+    function handleControlFrame(action, src, packetId, isDuplicate)
+        if isDuplicate
+            logLine(sprintf('Duplicate CTRL=%s ignored for state; ACK will be resent.', action));
+            return;
+        end
+
+        myCall = normalizeCall(app.localCallField.Value);
+        switch action
+            case 'REQ'
+                appendArea(app.recvArea, sprintf('%s  CONTROL REQUEST FROM=%s  requesting transmit control', timestamp(), src));
+                logLine(sprintf('%s requested transmit control. Release control if you want to hand over.', src));
+
+            case 'OFFER'
+                app.pendingIncomingOfferId = packetId;
+                app.pendingIncomingOfferFrom = src;
+                app.controlOwnerCall = src;
+                app.hasTxControl = false;
+                appendArea(app.recvArea, sprintf('%s  CONTROL OFFER FROM=%s  accept or reject transmit control', timestamp(), src));
+                logLine(sprintf('%s offered transmit control. Accept or reject the offer.', src));
+
+            case 'ACCEPT'
+                if ~isempty(app.pendingControlOfferId)
+                    app.pendingControlOfferId = '';
+                    app.controlOwnerCall = src;
+                    app.hasTxControl = false;
+                    appendArea(app.recvArea, sprintf('%s  CONTROL ACCEPTED BY=%s  transmit control transferred', timestamp(), src));
+                    logLine(sprintf('%s accepted transmit control.', src));
+                else
+                    logLine(sprintf('CTRL=ACCEPT from %s had no pending local offer.', src));
+                end
+
+            case 'REJECT'
+                if ~isempty(app.pendingControlOfferId)
+                    app.pendingControlOfferId = '';
+                    app.controlOwnerCall = myCall;
+                    app.hasTxControl = true;
+                    appendArea(app.recvArea, sprintf('%s  CONTROL REJECTED BY=%s  you keep transmit control', timestamp(), src));
+                    logLine(sprintf('%s rejected transmit control.', src));
+                else
+                    logLine(sprintf('CTRL=REJECT from %s had no pending local offer.', src));
+                end
+        end
+
+        setSessionStatus();
+        updateControlUi();
     end
 
     function sendAckForMessage(src, dest, msg)
@@ -422,7 +611,85 @@ logLine('GUI ready. Select a Pluto, connect, then choose Transmit or Receive.');
             logLine('ACK sent - resuming receive');
         catch e
             logLine(['ACK transmit failed: ' e.message]);
+            if app.sessionActive && isempty(app.rx)
+                try
+                    resumeSessionRx();
+                catch resumeError
+                    logLine(['RX resume failed: ' resumeError.message]);
+                end
+            end
         end
+    end
+
+    function suspendSessionRx()
+        if ~isempty(app.rx)
+            try
+                release(app.rx);
+            catch
+            end
+        end
+        app.rx = [];
+    end
+
+    function resumeSessionRx()
+        radioId = selectedRadioId();
+        app.rx = mkRx(radioId, app.fs_sdr, app.samplesPerFrame, app.rxGainField.Value, app.centerFrequency);
+        app.rxState = initRxState(app.fs, app.b_lpf, app.chunkSec);
+        app.receiving = true;
+        logLine('RX resumed');
+    end
+
+    function resetControlState()
+        app.hasTxControl = false;
+        app.controlOwnerCall = '';
+        app.pendingControlOfferId = '';
+        app.pendingControlRequestId = '';
+        app.pendingIncomingOfferId = '';
+        app.pendingIncomingOfferFrom = '';
+    end
+
+    function setSessionStatus()
+        if ~app.sessionActive
+            return;
+        end
+
+        if app.hasTxControl
+            setStatus('Session active - you can transmit', [0.08 0.38 0.16]);
+        else
+            setStatus(['Session active - listening to ' app.controlOwnerCall], [0.1 0.28 0.58]);
+        end
+    end
+
+    function updateControlUi()
+        if ~isfield(app, 'startButton')
+            return;
+        end
+
+        app.startButton.Enable = onOff(app.connected && ~app.sessionActive && ~app.txBusy);
+        app.stopButton.Enable = onOff(app.sessionActive || app.receiving || app.txBusy);
+        app.messageField.Enable = onOff(app.sessionActive && app.hasTxControl && ~app.txBusy);
+        app.sendButton.Enable = onOff(app.sessionActive && app.hasTxControl && ~app.txBusy);
+        app.releaseButton.Enable = onOff(app.sessionActive && app.hasTxControl && ~app.txBusy && isempty(app.pendingControlOfferId));
+        app.requestButton.Enable = onOff(app.sessionActive && ~app.hasTxControl && ~app.txBusy);
+        app.acceptButton.Enable = onOff(app.sessionActive && ~app.txBusy && ~isempty(app.pendingIncomingOfferId));
+        app.rejectButton.Enable = onOff(app.sessionActive && ~app.txBusy && ~isempty(app.pendingIncomingOfferId));
+
+        if app.sessionActive
+            if app.hasTxControl
+                app.msgPanel.Title = 'Message - Transmit Control';
+                app.controlLabel.Text = 'You have transmit control';
+                app.controlLabel.FontColor = [0.08 0.38 0.16];
+            else
+                app.msgPanel.Title = 'Message - Listening';
+                app.controlLabel.Text = ['Control: ' app.controlOwnerCall];
+                app.controlLabel.FontColor = [0.1 0.28 0.58];
+            end
+        else
+            app.msgPanel.Title = 'Message';
+            app.controlLabel.Text = 'No session';
+            app.controlLabel.FontColor = [0.2 0.2 0.2];
+        end
+        drawnow limitrate;
     end
 
     function onClose(~, ~)
@@ -519,6 +786,18 @@ if isempty(call)
 end
 if length(call) > 6
     call = call(1:6);
+end
+end
+
+function owner = initialControlOwner(local_call, remote_call)
+owner = half_duplex_control_logic('INITIAL_OWNER', local_call, remote_call);
+end
+
+function value = onOff(tf)
+if tf
+    value = 'on';
+else
+    value = 'off';
 end
 end
 
@@ -740,6 +1019,14 @@ tok = regexp(char(msg), '^ID=([0-9A-Fa-f]+);', 'tokens', 'once');
 if ~isempty(tok)
     packet_id = upper(tok{1});
 end
+end
+
+function packet_id = newPacketId()
+packet_id = upper(dec2hex(randi([0 65535]), 4));
+end
+
+function action = extractControlAction(msg)
+action = half_duplex_control_logic('CONTROL_ACTION', msg);
 end
 
 function value = timestamp()
